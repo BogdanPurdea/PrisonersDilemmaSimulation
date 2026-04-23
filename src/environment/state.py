@@ -5,8 +5,6 @@ Represents the full simulation state at any point in time,
 including initialization parameters, round tracking, cumulative
 scores, and round-by-round history.
 
-Corresponds to the Environment (E) state definition in
-Component 3 Section 1.
 """
 
 from dataclasses import dataclass, field

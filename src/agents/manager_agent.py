@@ -1,9 +1,6 @@
 """
 ManagerAgent — Central tournament coordinator for the Prisoner's Dilemma.
 
-Implements the Manager Agent specification from Component 2 §2.0.3
-and the PAGE(S) conceptual model from Component 3.
-
 Architecture:
   - ResponseCollector (CyclicBehaviour + Template: ontology=ACTION_RESPONSE)
     Routes incoming player responses to per-player asyncio.Queues.
@@ -12,7 +9,7 @@ Architecture:
     and runs all matches CONCURRENTLY via asyncio.gather.
     Each match has its own Environment and dedicated queues.
 
-Communication protocol per round (Component 3 §4):
+Communication protocol per round:
   1. Request:     Manager → Players [REQUEST_ACTION]
   2. Response:    Players → Manager [ACTION_RESPONSE]
   3. Computation: Manager applies actions to Environment
@@ -36,17 +33,18 @@ from strategies.catalog import STRATEGY_REGISTRY
 from agents.player_agent import PlayerAgent
 
 try:
-    from spade.presence import PresenceType, PresenceShow
+    from spade.presence import PresenceType, PresenceShow, PresenceInfo
 except ImportError:
     PresenceType = None
     PresenceShow = None
+    PresenceInfo = None
 
 
 class ManagerAgent(Agent):
     """
     Central tournament coordinator agent for the Prisoner's Dilemma.
 
-    Responsibilities (Component 2 §2.0.5):
+    Responsibilities:
     - Initialize and manage matches between player agents
     - Enforce synchronization across simulation rounds
     - Collect player actions and compute corresponding payoffs
@@ -178,6 +176,18 @@ class ManagerAgent(Agent):
             The agent stays alive until the user presses Ctrl+C.
             """
             print("\n[Manager] Tournament finished. Web interface is running.")
+
+            # Patch contacts to prevent SPADE Web UI PresenceNotFound crash
+            # Since players are stopped, some might not have finalised presence
+            if PresenceType is not None:
+                for c in self.agent.presence.contacts.values():
+                    if c.current_presence is None:
+                        # inject a fallback presence so the SPADE web server doesn't crash parsing them
+                        c.update_presence(
+                            "default",
+                            PresenceInfo(PresenceType.UNAVAILABLE, PresenceShow.NONE)
+                        )
+
             print("[Manager] Inspect results at http://127.0.0.1:10000/spade")
             print("[Manager] Press Ctrl+C to shut down.\n")
 
@@ -318,10 +328,7 @@ class ManagerAgent(Agent):
                 f"{strat_b}={metrics.get('cooperation_rate_p2', 0):.0%}"
             )
 
-            # 8. Teardown: unsubscribe presence, remove queues, stop players
-            if PresenceType is not None:
-                self.agent.presence.unsubscribe(p1_jid)
-                self.agent.presence.unsubscribe(p2_jid)
+            # 8. Teardown: remove queues, stop players (but DO NOT unsubscribe them so they show in web UI)
             del self.agent.response_queues[p1_jid]
             del self.agent.response_queues[p2_jid]
             await player1.stop()

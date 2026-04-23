@@ -8,10 +8,6 @@ ManagerAgent that internally orchestrates the full tournament
 Usage:
     python main.py
 """
-
-import subprocess
-import sys
-import time
 from uuid import uuid4
 
 import spade
@@ -19,25 +15,6 @@ import spade
 from config.server_config import XMPP_SERVER, PASSWORD
 from config.simulation_config import SimulationConfig
 from agents.manager_agent import ManagerAgent
-
-
-def start_spade_server():
-    """
-    Launch the built-in SPADE XMPP server as a background subprocess.
-
-    Returns:
-        subprocess.Popen: The server process handle.
-    """
-    print("[Tournament] Starting SPADE XMPP server...")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "spade", "run"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    time.sleep(3)  # allow server to initialize
-    print("[Tournament] SPADE XMPP server started.")
-    return proc
-
 
 async def main():
     """
@@ -60,11 +37,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    server_proc = start_spade_server()
-    try:
-        spade.run(main())
-    finally:
-        print("[Tournament] Shutting down SPADE server...")
-        server_proc.terminate()
-        server_proc.wait()
-        print("[Tournament] Done.")
+    spade.run(main())

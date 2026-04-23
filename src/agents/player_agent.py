@@ -1,9 +1,6 @@
 """
 PlayerAgent — Autonomous SPADE agent for the Prisoner's Dilemma.
 
-Implements the Player Agent specification from Component 2 §2.0.3
-and the PAGE(S) conceptual model from Component 3.
-
 Uses two CyclicBehaviours, each registered with a distinct Template:
   - ActionBehaviour (Template: ontology=REQUEST_ACTION)
   - ResultBehaviour (Template: ontology=ROUND_RESULT)
@@ -77,9 +74,10 @@ class PlayerAgent(Agent):
                 status=f"Ready to play ({self.strategy.name})"
             )
 
-            # Auto-approve subscription requests from Manager
+            # Auto-approve subscription requests from Manager and subscribe back (bidirectional)
             def on_subscribe(peer_jid):
                 self.presence.approve_subscription(peer_jid)
+                self.presence.subscribe(peer_jid)
 
             self.presence.on_subscribe = on_subscribe
 
@@ -87,7 +85,7 @@ class PlayerAgent(Agent):
         """
         Handles REQUEST_ACTION messages from the ManagerAgent.
 
-        Implements the deliberation cycle (Component 3 / README §5.2):
+        Implements the deliberation cycle:
         1. Sense: receive the action request
         2. Deliberate: call strategy.decide(history)
         3. Execute: send ACTION_RESPONSE with the chosen action

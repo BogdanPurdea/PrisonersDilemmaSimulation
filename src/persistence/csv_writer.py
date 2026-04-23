@@ -2,8 +2,6 @@
 CSV persistence utility for the Prisoner's Dilemma simulation.
 
 Writes round-by-round match data and aggregated metrics to .CSV files.
-Used internally by the ManagerAgent to fulfill Component 2 §2.0.3:
-"Persist results to .CSV storage."
 """
 
 import csv

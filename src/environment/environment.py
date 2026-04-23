@@ -4,8 +4,6 @@ Prisoner's Dilemma Environment.
 Manages the game state, applies actions, computes payoffs, and
 provides percepts and aggregated metrics.
 
-Corresponds to the Environment (E) in Component 3 Section 1
-and the Environment class in Component 3 Figure 2.
 """
 
 from copy import deepcopy
@@ -165,9 +163,6 @@ class Environment:
             - avg_payoff_p1: average payoff per round for p1
             - avg_payoff_p2: average payoff per round for p2
             - total_rounds: number of rounds played
-
-        Fulfills Component 2 §2.0.1 output requirement for
-        "Aggregated performance metrics".
         """
         if not self._state.history:
             return {}

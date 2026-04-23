@@ -115,13 +115,9 @@ class WinStayLoseShift(Strategy):
         last = history[-1]
         my_last_action = Action(last["my_action"])
         my_last_payoff = last["my_payoff"]
-        # "Win" = got T or R (the two higher payoffs)
-        # We consider a "win" if both players did the same thing or we defected while they cooperated
-        # Simpler: if payoff was high (>= R), stay; otherwise shift
-        # Using the payoff directly: T and R are "wins", P and S are "losses"
-        if my_last_payoff >= 5:  # R=5 threshold — win
+        if my_last_payoff >= 5:
             return my_last_action
-        else:  # P=1 or S=0 — lose, shift
+        else:
             if my_last_action == Action.COOPERATE:
                 return Action.DEFECT
             else:
