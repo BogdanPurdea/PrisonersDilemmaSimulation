@@ -68,12 +68,17 @@ class ManagerAgent(Agent):
         super().__init__(jid, password, *args, **kwargs)
         self.config = config
 
-        # Per-player response routing: JID → asyncio.Queue
+        # Per-match response routing: match_id → asyncio.Queue
         # Populated dynamically as matches start
         self.response_queues: dict[str, asyncio.Queue] = {}
 
         # Track presence readiness
         self.players_ready: set = set()
+
+        # Track our 9 reusable player agents
+        self.strategy_to_jid: dict[str, str] = {}
+        self.player_agents: dict[str, PlayerAgent] = {}
+        self.player_locks: dict[str, asyncio.Lock] = {}
 
     async def setup(self):
         """
@@ -92,7 +97,7 @@ class ManagerAgent(Agent):
             f"S={self.config.payoff['S']}"
         )
 
-        # --- Presence setup ---
+        # --- Presence setup and wait for players ---
         if PresenceType is not None:
             def on_available(peer_jid, presence_info, last_presence):
                 jid_str = str(peer_jid).split("/")[0]
@@ -108,6 +113,30 @@ class ManagerAgent(Agent):
                 show=PresenceShow.CHAT,
                 status="Tournament Manager ready",
             )
+
+        print(f"[Manager] Spawning {len(strategy_names)} persistent PlayerAgents...")
+        for strat_name in strategy_names:
+            p_jid = f"{strat_name.lower()}_{uuid4()}@{XMPP_SERVER}"
+            self.strategy_to_jid[strat_name] = p_jid
+            player = PlayerAgent(p_jid, PASSWORD, STRATEGY_REGISTRY[strat_name]())
+            self.player_agents[p_jid] = player
+            self.player_locks[p_jid] = asyncio.Lock()
+            await player.start(auto_register=True)
+
+            if PresenceType is not None:
+                self.presence.subscribe(p_jid)
+
+        if PresenceType is not None:
+            print("[Manager] Waiting for all players to come online...")
+            expected_jids = set(self.strategy_to_jid.values())
+            wait_timeout = 20  # seconds
+            elapsed = 0.0
+            while not (expected_jids <= self.players_ready):
+                await asyncio.sleep(0.5)
+                elapsed += 0.5
+                if elapsed >= wait_timeout:
+                    print("[Manager] Warning: Timeout waiting for some players to become available.")
+                    break
 
         # --- ResponseCollector: routes ACTION_RESPONSE to per-player queues ---
         response_template = Template()
@@ -135,8 +164,9 @@ class ManagerAgent(Agent):
         async def run(self):
             msg = await self.receive(timeout=5)
             if msg is not None:
-                sender = str(msg.sender).split("/")[0]
-                queue = self.agent.response_queues.get(sender)
+                match_id = msg.get_metadata("match_id")
+                queue_key = f"{match_id}_{str(msg.sender).split('/')[0]}"
+                queue = self.agent.response_queues.get(queue_key)
                 if queue is not None:
                     await queue.put(msg)
 
@@ -189,6 +219,7 @@ class ManagerAgent(Agent):
                         )
 
             print("[Manager] Inspect results at http://127.0.0.1:10000/spade")
+            print("[Manager] All player agents remain online for inspection.")
             print("[Manager] Press Ctrl+C to shut down.\n")
 
             # Keep the agent alive for inspection
@@ -197,6 +228,11 @@ class ManagerAgent(Agent):
                     await asyncio.sleep(1)
             except asyncio.CancelledError:
                 pass
+            
+            # Cleanly stop all players
+            print("[Manager] Shutting down persistent PlayerAgents...")
+            for player in self.agent.player_agents.values():
+                await player.stop()
 
             await self.agent.stop()
 
@@ -211,12 +247,12 @@ class ManagerAgent(Agent):
             Run a single match between two strategies.
 
             This method:
-            1. Spawns two fresh PlayerAgents (agent-in-agent pattern)
-            2. Registers per-player asyncio.Queues for response routing
-            3. Subscribes to player presence and waits for availability
-            4. Executes the round loop (4-step protocol)
+            1. Looks up the appropriate persistent PlayerAgents via strategy name
+            2. Acquires per-player locks to prevent concurrent matches on the same agent
+            3. Registers per-match/per-player asyncio.Queues for response routing
+            4. Executes the round loop (4-step protocol) using match_id
             5. Computes metrics and persists CSV
-            6. Tears down the PlayerAgents
+            6. Tears down the match-specific queues and releases locks
 
             Args:
                 strat_a: Name of strategy for player 1.
@@ -225,111 +261,109 @@ class ManagerAgent(Agent):
                 total: Total number of matches.
             """
             tag = f"[Match {match_idx}/{total}]"
-            print(f"{tag} {strat_a} vs {strat_b} — spawning players...")
+            match_id = f"match_{uuid4()}"
 
-            # 1. Create unique JIDs and spawn PlayerAgents
-            p1_jid = f"player_{uuid4()}@{XMPP_SERVER}"
-            p2_jid = f"player_{uuid4()}@{XMPP_SERVER}"
+            # 1. Lookup JIDs for strategies
+            p1_jid = self.agent.strategy_to_jid[strat_a]
+            p2_jid = self.agent.strategy_to_jid[strat_b]
 
-            player1 = PlayerAgent(p1_jid, PASSWORD, STRATEGY_REGISTRY[strat_a]())
-            player2 = PlayerAgent(p2_jid, PASSWORD, STRATEGY_REGISTRY[strat_b]())
+            print(f"{tag} {strat_a} vs {strat_b} — waiting for player availability...")
+            
+            # Acquire locks for both players in a consistent order to prevent deadlocks
+            lock1_jid, lock2_jid = min(p1_jid, p2_jid), max(p1_jid, p2_jid)
+            
+            async with self.agent.player_locks[lock1_jid]:
+                async with self.agent.player_locks[lock2_jid]:
+                    
+                    # 2. Register match-specific response queues BEFORE starting rounds
+                    q1 = asyncio.Queue()
+                    q2 = asyncio.Queue()
+                    q1_key = f"{match_id}_{p1_jid}"
+                    q2_key = f"{match_id}_{p2_jid}"
+                    
+                    self.agent.response_queues[q1_key] = q1
+                    self.agent.response_queues[q2_key] = q2
 
-            # 2. Register response queues BEFORE starting players
-            q1 = asyncio.Queue()
-            q2 = asyncio.Queue()
-            self.agent.response_queues[p1_jid] = q1
-            self.agent.response_queues[p2_jid] = q2
+                    # 3. Create a fresh Environment for this match
+                    env = Environment(
+                        payoff=self.agent.config.payoff,
+                        max_rounds=self.agent.config.rounds,
+                    )
 
-            await player1.start(auto_register=True)
-            await player2.start(auto_register=True)
+                    jid_to_strategy = {p1_jid: strat_a, p2_jid: strat_b}
 
-            # 3. Subscribe to player presence and wait briefly
-            if PresenceType is not None:
-                self.agent.presence.subscribe(p1_jid)
-                self.agent.presence.subscribe(p2_jid)
+                    print(f"{tag} {strat_a} vs {strat_b} — starting {self.agent.config.rounds} rounds")
 
-            # Brief wait for players to fully initialize
-            await asyncio.sleep(0.5)
+                    # 4. Execute round loop
+                    for round_num in range(self.agent.config.rounds):
+                        # Step 1: REQUEST — send action requests to both players
+                        for pjid in [p1_jid, p2_jid]:
+                            request_msg = Message(to=pjid)
+                            request_msg.set_metadata("performative", "request")
+                            request_msg.set_metadata("ontology", "REQUEST_ACTION")
+                            request_msg.set_metadata("match_id", match_id)
+                            request_msg.body = f"round_{round_num + 1}"
+                            await self.send(request_msg)
 
-            # 4. Create a fresh Environment for this match
-            env = Environment(
-                payoff=self.agent.config.payoff,
-                max_rounds=self.agent.config.rounds,
-            )
+                        # Step 2: RESPONSE — await ACTION_RESPONSE from each player's queue
+                        try:
+                            r1 = await asyncio.wait_for(q1.get(), timeout=30)
+                            p1_action = r1.body
+                        except asyncio.TimeoutError:
+                            print(f"{tag} Warning: {strat_a} timeout in round {round_num + 1}, defaulting to D")
+                            p1_action = "D"
 
-            jid_to_strategy = {p1_jid: strat_a, p2_jid: strat_b}
+                        try:
+                            r2 = await asyncio.wait_for(q2.get(), timeout=30)
+                            p2_action = r2.body
+                        except asyncio.TimeoutError:
+                            print(f"{tag} Warning: {strat_b} timeout in round {round_num + 1}, defaulting to D")
+                            p2_action = "D"
 
-            print(f"{tag} {strat_a} vs {strat_b} — starting {self.agent.config.rounds} rounds")
+                        # Step 3: COMPUTATION — apply actions to environment
+                        payoffs = env.apply_actions(p1_jid, p1_action, p2_jid, p2_action)
 
-            # 5. Execute round loop
-            for round_num in range(self.agent.config.rounds):
-                # Step 1: REQUEST — send action requests to both players
-                for pjid in [p1_jid, p2_jid]:
-                    request_msg = Message(to=pjid)
-                    request_msg.set_metadata("performative", "request")
-                    request_msg.set_metadata("ontology", "REQUEST_ACTION")
-                    request_msg.body = f"round_{round_num + 1}"
-                    await self.send(request_msg)
+                        # Step 4: FEEDBACK — send ROUND_RESULT to each player
+                        result_p1 = Message(to=p1_jid)
+                        result_p1.set_metadata("performative", "inform")
+                        result_p1.set_metadata("ontology", "ROUND_RESULT")
+                        result_p1.set_metadata("match_id", match_id)
+                        result_p1.body = f"{p2_action},{payoffs['p1_payoff']},{payoffs['p2_payoff']}"
+                        await self.send(result_p1)
 
-                # Step 2: RESPONSE — await ACTION_RESPONSE from each player's queue
-                try:
-                    r1 = await asyncio.wait_for(q1.get(), timeout=30)
-                    p1_action = r1.body
-                except asyncio.TimeoutError:
-                    print(f"{tag} Warning: {strat_a} timeout in round {round_num + 1}, defaulting to D")
-                    p1_action = "D"
+                        result_p2 = Message(to=p2_jid)
+                        result_p2.set_metadata("performative", "inform")
+                        result_p2.set_metadata("ontology", "ROUND_RESULT")
+                        result_p2.set_metadata("match_id", match_id)
+                        result_p2.body = f"{p1_action},{payoffs['p2_payoff']},{payoffs['p1_payoff']}"
+                        await self.send(result_p2)
 
-                try:
-                    r2 = await asyncio.wait_for(q2.get(), timeout=30)
-                    p2_action = r2.body
-                except asyncio.TimeoutError:
-                    print(f"{tag} Warning: {strat_b} timeout in round {round_num + 1}, defaulting to D")
-                    p2_action = "D"
+                    # 5. Persist results to CSV
+                    metrics = env.get_metrics()
+                    state = env.get_state()
 
-                # Step 3: COMPUTATION — apply actions to environment
-                payoffs = env.apply_actions(p1_jid, p1_action, p2_jid, p2_action)
+                    results_dir = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "..", "results",
+                    )
+                    filepath = os.path.join(results_dir, f"{strat_a}_vs_{strat_b}.csv")
 
-                # Step 4: FEEDBACK — send ROUND_RESULT to each player
-                result_p1 = Message(to=p1_jid)
-                result_p1.set_metadata("performative", "inform")
-                result_p1.set_metadata("ontology", "ROUND_RESULT")
-                result_p1.body = f"{p2_action},{payoffs['p1_payoff']},{payoffs['p2_payoff']}"
-                await self.send(result_p1)
+                    CSVWriter.write_round_data(
+                        filepath=filepath,
+                        history=state.history,
+                        metrics=metrics,
+                        strategy_names=jid_to_strategy,
+                    )
 
-                result_p2 = Message(to=p2_jid)
-                result_p2.set_metadata("performative", "inform")
-                result_p2.set_metadata("ontology", "ROUND_RESULT")
-                result_p2.body = f"{p1_action},{payoffs['p2_payoff']},{payoffs['p1_payoff']}"
-                await self.send(result_p2)
+                    # 6. Log summary
+                    print(
+                        f"{tag} {strat_a} vs {strat_b} — DONE | "
+                        f"Scores: {strat_a}={metrics.get('total_payoff_p1', 'N/A')}, "
+                        f"{strat_b}={metrics.get('total_payoff_p2', 'N/A')} | "
+                        f"Coop: {strat_a}={metrics.get('cooperation_rate_p1', 0):.0%}, "
+                        f"{strat_b}={metrics.get('cooperation_rate_p2', 0):.0%}"
+                    )
 
-            # 6. Persist results to CSV (Component 2 §2.0.3)
-            metrics = env.get_metrics()
-            state = env.get_state()
-
-            results_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..", "results",
-            )
-            filepath = os.path.join(results_dir, f"{strat_a}_vs_{strat_b}.csv")
-
-            CSVWriter.write_round_data(
-                filepath=filepath,
-                history=state.history,
-                metrics=metrics,
-                strategy_names=jid_to_strategy,
-            )
-
-            # 7. Log summary
-            print(
-                f"{tag} {strat_a} vs {strat_b} — DONE | "
-                f"Scores: {strat_a}={metrics.get('total_payoff_p1', 'N/A')}, "
-                f"{strat_b}={metrics.get('total_payoff_p2', 'N/A')} | "
-                f"Coop: {strat_a}={metrics.get('cooperation_rate_p1', 0):.0%}, "
-                f"{strat_b}={metrics.get('cooperation_rate_p2', 0):.0%}"
-            )
-
-            # 8. Teardown: remove queues, stop players (but DO NOT unsubscribe them so they show in web UI)
-            del self.agent.response_queues[p1_jid]
-            del self.agent.response_queues[p2_jid]
-            await player1.stop()
-            await player2.stop()
+                    # 7. Teardown: remove queues (we keep the persistent player alive)
+                    del self.agent.response_queues[q1_key]
+                    del self.agent.response_queues[q2_key]
