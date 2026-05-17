@@ -19,7 +19,7 @@ DEFAULT_ROUNDS = 1000
 
 DEFAULT_STRATEGIES = [
     "AlwaysCooperate",
-    "AlwaysDefect",
+    # "AlwaysDefect",
     "Random",
     "TitForTat",
     "TitForTatWithForgiveness",

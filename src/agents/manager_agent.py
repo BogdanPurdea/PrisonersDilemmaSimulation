@@ -84,7 +84,7 @@ class ManagerAgent(Agent):
         """
         Set up the ResponseCollector (Template-filtered) and TournamentRunner.
         """
-        strategy_names = list(STRATEGY_REGISTRY.keys())
+        strategy_names = [s for s in self.config.strategies if s in STRATEGY_REGISTRY]
         n_matches = len(list(itertools.combinations(strategy_names, 2)))
 
         print(f"[Manager] ManagerAgent {self.jid} starting...")
@@ -182,7 +182,7 @@ class ManagerAgent(Agent):
 
         async def run(self):
             """Generate pairings and run all matches concurrently."""
-            strategy_names = list(STRATEGY_REGISTRY.keys())
+            strategy_names = [s for s in self.agent.config.strategies if s in STRATEGY_REGISTRY]
             pairings = list(itertools.combinations(strategy_names, 2))
 
             print(f"\n[Manager] Starting {len(pairings)} matches concurrently...\n")
