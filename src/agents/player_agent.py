@@ -44,8 +44,8 @@ class PlayerAgent(Agent):
         """
         super().__init__(jid, password, *args, **kwargs)
         self.strategy = strategy
-        self.history: list[dict] = []
-        self._last_action: str | None = None  # track our last action for history
+        self.history: dict[str, list[dict]] = {}
+        self._last_action: dict[str, str] = {}  # track our last action for history per match
 
     async def setup(self):
         """
@@ -96,16 +96,25 @@ class PlayerAgent(Agent):
             if msg is None:
                 return
 
+            match_id = msg.get_metadata("match_id")
+            if not match_id:
+                print(f"[PlayerAgent {self.agent.jid}] Warning: Message without match_id received.")
+                return
+
+            if match_id not in self.agent.history:
+                self.agent.history[match_id] = []
+
             # Deliberate: invoke the strategy
-            action = self.agent.strategy.decide(self.agent.history)
+            action = self.agent.strategy.decide(self.agent.history[match_id])
 
             # Track our action so ResultBehaviour can record it
-            self.agent._last_action = action.value
+            self.agent._last_action[match_id] = action.value
 
             # Respond with chosen action
             reply = Message(to=str(msg.sender))
             reply.set_metadata("performative", "inform")
             reply.set_metadata("ontology", "ACTION_RESPONSE")
+            reply.set_metadata("match_id", match_id)
             reply.body = action.value  # "C" or "D"
             await self.send(reply)
 
@@ -126,6 +135,13 @@ class PlayerAgent(Agent):
             if msg is None:
                 return
 
+            match_id = msg.get_metadata("match_id")
+            if not match_id:
+                return
+
+            if match_id not in self.agent.history:
+                self.agent.history[match_id] = []
+
             # Parse percept: "opponent_action,my_payoff,opponent_payoff"
             parts = msg.body.split(",")
             opponent_action = parts[0]
@@ -133,10 +149,10 @@ class PlayerAgent(Agent):
             opponent_payoff = int(parts[2])
 
             # Retrieve the action we took this round
-            my_action = self.agent._last_action or "C"
+            my_action = self.agent._last_action.get(match_id, "C")
 
             # Update local history
-            self.agent.history.append({
+            self.agent.history[match_id].append({
                 "my_action": my_action,
                 "opponent_action": opponent_action,
                 "my_payoff": my_payoff,

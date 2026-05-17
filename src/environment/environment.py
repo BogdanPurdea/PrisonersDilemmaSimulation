@@ -116,35 +116,6 @@ class Environment:
 
         return {"p1_payoff": p1_payoff, "p2_payoff": p2_payoff}
 
-    def get_percept(self, player_jid: str, round_idx: int) -> Dict:
-        """
-        Return the percept for a specific player after a specific round.
-
-        The percept contains the opponent's action and payoffs, which
-        the player uses to update its local history.
-
-        Args:
-            player_jid: JID string of the player requesting the percept.
-            round_idx: 0-based index of the round in history.
-
-        Returns:
-            Dict with "opponent_action", "my_payoff", "opponent_payoff".
-        """
-        record = self._state.history[round_idx]
-
-        if player_jid == record["p1_jid"]:
-            return {
-                "opponent_action": record["p2_action"],
-                "my_payoff": record["p1_payoff"],
-                "opponent_payoff": record["p2_payoff"],
-            }
-        else:
-            return {
-                "opponent_action": record["p1_action"],
-                "my_payoff": record["p2_payoff"],
-                "opponent_payoff": record["p1_payoff"],
-            }
-
     def get_state(self) -> State:
         """Return a deep copy of the current full state snapshot."""
         return deepcopy(self._state)
@@ -188,7 +159,3 @@ class Environment:
             "avg_payoff_p1": self._state.scores[p1_jid] / total,
             "avg_payoff_p2": self._state.scores[p2_jid] / total,
         }
-
-    def is_finished(self) -> bool:
-        """Check if the match has reached the maximum number of rounds."""
-        return self._state.round_number >= self._state.max_rounds
