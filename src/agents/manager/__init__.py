@@ -1,2 +1,3 @@
 from agents.manager.manager_agent import ManagerAgent
-from agents.player.player_agent import PlayerAgent
+
+__all__ = ["ManagerAgent"]

@@ -15,10 +15,10 @@ DEFAULT_R = 5   # Reward for mutual cooperation
 DEFAULT_P = 1   # Punishment for mutual defection
 DEFAULT_S = 0   # Sucker's payoff
 
-DEFAULT_ROUNDS = 1000
+DEFAULT_ROUNDS = 100
 
 DEFAULT_STRATEGIES = [
-    "AlwaysCooperate",
+    # "AlwaysCooperate",
     # "AlwaysDefect",
     "Random",
     "TitForTat",

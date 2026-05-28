@@ -14,7 +14,7 @@ import spade
 
 from config.server_config import XMPP_SERVER, PASSWORD
 from config.simulation_config import SimulationConfig
-from agents.manager_agent import ManagerAgent
+from agents.manager.manager_agent import ManagerAgent
 
 async def main():
     """
